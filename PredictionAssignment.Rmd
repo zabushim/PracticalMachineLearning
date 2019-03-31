@@ -1,0 +1,194 @@
+---
+title: "Peer Assignment 8 - week 4"
+author: "Ziyad Abushima"
+date: "March 30, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r, warning=FALSE, error=FALSE}
+suppressMessages(library(caret))
+suppressMessages(library(randomForest))
+```
+
+## Executive summary
+In this assignment, we have created a model that predicts how well barbell exercises were performed, based on measurements made by on-body sensors. These measurements were captured in a training dataset, which we have split in 70% Training and 30% Validation sets. 
+While we utilized multiple models, we predicted the 'classes' of 20 different test cases only using the Random Forest model due to its' accuracy of 99.25% (and 0.75% out-of-sample error) and a kappa of 0.991. 
+
+## Introductions  
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, our goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: [http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har) (see the section on the Weight Lifting Exercise Dataset).   
+
+## Data Sources  
+The training data for this project is available here:  
+[https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv)  
+The test data is available here:  
+[https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv)  
+The data for this project comes from this original source: [http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har). If you use the document you create for this class for any purpose please cite them as they have been very generous in allowing their data to be used for this kind of assignment.  
+
+### Intended Results  
+The goal of this project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. You may use any of the other variables to predict with. You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the choices you did. You will also use your prediction model to predict 20 different test cases.  
+1. Your submission should consist of a link to a Github repo with your R markdown and compiled HTML file describing your analysis. Please constrain the text of the writeup to < 2000 words and the number of figures to be less than 5. It will make it easier for the graders if you submit a repo with a gh-pages branch so the HTML page can be viewed online (and you always want to make it easy on graders :-).  
+2. You should also apply your machine learning algorithm to the 20 test cases available in the test data above. Please submit your predictions in appropriate format to the programming assignment for automated grading. See the programming assignment for additional details.  
+
+## Download and load the PML data
+
+```{r download, warning=FALSE, error=FALSE}
+if(!file.exists("./data")) {
+      dir.create("./data")
+    }
+if (!file.exists("./data/pml-training.csv")) {
+    download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",destfile = "./data/pml-training.csv")
+    }
+if (!file.exists("./data/pml-testing.csv")) {
+    download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv",destfile = "~/data/pml-testing.csv")
+    
+    }
+PMLTraining <- read.csv("./data/pml-training.csv")
+dim(PMLTraining)
+names(PMLTraining)
+PMLTesting <- read.csv("./data/pml-testing.csv") 
+```
+
+## Data preparation
+
+In order to identify the right model, we will first need to tidy the data set by removing some 'noisy' features and selecting the right ones.
+
+### Remove all non-essential descriptive variables
+
+```{r descriptive, warning=FALSE, error=FALSE}
+DescColumns <- c("X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", 
+                 "cvtd_timestamp", "new_window", "num_window")
+```
+
+### Remove all variables with a missing value.
+
+```{r missingvalue, warning=FALSE, error=FALSE}
+ColumnsNA <- apply(PMLTraining,2,function(x) table(is.na(x))[1]!=dim(PMLTraining)[1])   
+NAColumns <- names(PMLTraining)[ColumnsNA]
+DelColumns <- c(DescColumns, NAColumns)
+NonNADescPMLTraining <- PMLTraining[, !names(PMLTraining) %in% DelColumns]
+```
+
+### Remove any near zero variance predictors to get rid of sparse data.
+
+```{r NZV, warning=FALSE, error=FALSE}
+ColumnsNZV <- nearZeroVar(NonNADescPMLTraining, saveMetrics = TRUE)
+PMLTraining_Ready <- NonNADescPMLTraining[,!ColumnsNZV$nzv]
+```
+
+Verifying if any NAs still left
+
+```{r checkNA, warning=FALSE, error=FALSE}
+if(any(is.na(PMLTraining_Ready))==FALSE) {
+    "No more NAs"
+} else {
+    "NAs still present"
+}
+
+str(PMLTraining_Ready)
+```
+
+Obtaining list of final variable names and position of 'classe' as Test set does not have 'classe' and it will be a challenge to 'remove' it.
+
+```{r finalfeatures, warning=FALSE, error=FALSE}
+names(PMLTraining_Ready)
+```
+
+Now we will clean up the columns in the Testing Set, utilizing the list of columns in PMLTraining_Ready set.
+
+```{r classecolumn, warning=FALSE, error=FALSE}
+# Get rid of 'classe' for PMLTesting later
+ReadyColumns <- names(PMLTraining_Ready)[-53]
+PMLTesting <- PMLTesting[,ReadyColumns]
+```
+
+## Partitioning Training Set  
+
+We will split the cleaned PMLTraining_Ready set into a pure training data set (70%) and a validation data set (30%). We will use the validation data set to conduct cross validation in future steps.
+
+```{r splitin3, warning=FALSE, error=FALSE}
+set.seed(201903) 
+inTrain <- createDataPartition(PMLTraining_Ready$classe, p = 0.70, list = FALSE)
+validationSet <- PMLTraining_Ready[-inTrain, ]
+trainingSet <- PMLTraining_Ready[inTrain, ]
+rm(inTrain)
+```  
+
+The Dataset now consists of `r dim(trainingSet)[2]` variables with the observations divided as following:  
+- Training Data: `r dim(trainingSet)[1]` observations.  
+- Validation Data: `r dim(validationSet)[1]` observations.  
+- Test Data: `r dim(PMLTesting)[1]` observations.  
+
+## Model Selection
+
+Using the training set we will apply four models using a 5-fold cross-validation
+- Random Forest (rf)
+- Linear Discriminant Analysis (lda)
+- Boosted Trees (gbm)
+- Support Vector Machine (svm)
+
+```{r trainmodel, warning=FALSE, error=FALSE}
+# Setting up control parameters for training
+TRNCTRL <- trainControl(method = "cv", number = 5, returnData = F)
+
+# To ensure reproducibility we set the seed.
+set.seed(201903)
+RFmodel <- train(classe ~ ., data = trainingSet, method = "rf", tuneLength = 4, ntree = 100, trControl = TRNCTRL)
+#RFmodel <- train(classe ~ ., method="rf", data = trainingSet, tuneLength  = 15, trControl = TRNCTRL) # Random Forest
+set.seed(201903)
+LDAmodel <- train(classe ~ ., data = trainingSet, method="lda", tuneLength = 4, trControl = TRNCTRL) # Linear Discriminant Analysis
+set.seed(201903)
+GBMmodel <- train(classe ~ ., data = trainingSet, method="gbm", tuneLength = 4, trControl = TRNCTRL) # Boosted Trees
+set.seed(201903)
+SVMmodel <- train(classe ~ ., data = trainingSet, method="svmLinear", tuneLength = 4, trControl = TRNCTRL) # Support Vector Machine
+```
+
+To evaluate the performance of each model, we compare the 5-fold resampling distributions and estimate the out-of-sample error.
+
+```{r checkmodel, warning=FALSE, error=FALSE}
+# collect resamples
+resampDist <- resamples(list(RF=RFmodel, LDA=LDAmodel, GBM=GBMmodel, SVM=SVMmodel))
+
+# summary of the resampling distributions
+summary(resampDist)
+
+# estimated out of sample errors
+RFose <- 1-mean(resampDist$values[, "RF~Accuracy"])
+LDAOse <- 1-mean(resampDist$values[, "LDA~Accuracy"])
+GBMose <- 1-mean(resampDist$values[, "GBM~Accuracy"])
+SVMose <- 1-mean(resampDist$values[, "SVM~Accuracy"])
+
+dotplot(resampDist)
+```
+
+The Accuracy for Random Forest is the highest, followed by GBM, SVM and then LDA. We will move forward with using the two models with the highest mean accuracy (= lowest out-of-sample errors), to predict the 'classe' of the validation set.
+
+```{r RFPred, warning=FALSE, error=FALSE}
+# Prediction using Random Forest Model
+RFValpred <- predict(RFmodel, newdata=validationSet)
+RFValcm <- confusionMatrix(validationSet$classe, RFValpred)
+RFValacc <- RFValcm$overall[['Accuracy']]
+RFValose <- 1-RFValacc
+RFVkappa  <- RFValcm$overall[['Kappa']]
+
+# Prediction using Boosted Trees Model
+GBMValpred <- predict(GBMmodel, newdata=validationSet)
+GBMValcm <- confusionMatrix(validationSet$classe, GBMValpred)
+GBMValacc <- GBMValcm$overall[['Accuracy']]
+GBMValose <- 1-GBMValacc
+GBMVkappa  <- GBMValcm$overall[['Kappa']]
+```
+
+The Estimated Accuracy of the Random Forest Model is `r RFValacc*100`% and the Estimated Out-of-Sample Error is `r RFValose*100`% (κ = `r RFVkappa`).  
+The Estimated Accuracy of the Boosted Trees Model is `r GBMValacc*100`% and the Estimated Out-of-Sample Error is `r GBMValose*100`% (κ = `r GBMVkappa`).  
+
+Considering the stronger accuracy for Random Forest model, we will use Random Forest model to predict the 'classe' for the original Test set downloaded from the data source.
+
+## Predictions utilizing Random Forest
+Finally, we can predict the outcome for the new data with the random forest model.
+
+```{r RFPredTest, warning=FALSE, error=FALSE}
+predict(RFmodel, PMLTesting)
+```
